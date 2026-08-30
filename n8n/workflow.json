@@ -1,0 +1,185 @@
+{
+  "name": "Content Generation Bot — Video Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-pipeline",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook: New Topic",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 300],
+      "typeVersion": 2,
+      "notes": "POST { topic, target_length_min, production_mode, budget_usd }"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3847/jobs/run",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "=topic", "value": "={{ $json.body.topic }}" },
+            { "name": "=target_length_min", "value": "={{ $json.body.target_length_min || 10 }}" },
+            { "name": "=production_mode", "value": "={{ $json.body.production_mode || 'low-cost' }}" },
+            { "name": "=budget_usd", "value": "={{ $json.body.budget_usd || 10 }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "start-pipeline",
+      "name": "Start Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [470, 300],
+      "typeVersion": 4
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, message: 'Pipeline triggered', topic: $json.body.topic }) }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [690, 300],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "approval-gate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "approval-webhook",
+      "name": "Webhook: Approval Gate Notification",
+      "type": "n8n-nodes-base.webhook",
+      "position": [250, 550],
+      "typeVersion": 2,
+      "notes": "Called by pipeline when a gate is reached. Payload: { job_id, gate_id, label, preview }"
+    },
+    {
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=:pause_button: *Approval Gate: {{ $json.body.label }}*\nJob: `{{ $json.body.job_id }}`\nGate: `{{ $json.body.gate_id }}`\n\nReview the output and approve/reject:\n```\ncurl -X POST http://localhost:3847/jobs/{{ $json.body.job_id }}/gates/{{ $json.body.gate_id }} -H 'Content-Type: application/json' -d '{\"status\":\"approved\"}'```",
+        "otherOptions": {}
+      },
+      "id": "slack-notify",
+      "name": "Slack: Notify Gate",
+      "type": "n8n-nodes-base.slack",
+      "position": [470, 550],
+      "typeVersion": 2,
+      "notes": "Configure Slack credentials in n8n. Replace #content-pipeline with your channel."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, message: 'Notification sent' }) }}"
+      },
+      "id": "respond-approval",
+      "name": "Respond to Gate Hook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [690, 550],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 1 }]
+        }
+      },
+      "id": "schedule-check",
+      "name": "Hourly Job Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [250, 800],
+      "typeVersion": 1,
+      "notes": "Optional: polls for stuck/failed jobs"
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3847/jobs",
+        "options": {}
+      },
+      "id": "check-jobs",
+      "name": "GET /jobs",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [470, 800],
+      "typeVersion": 4
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.stage }}",
+              "operation": "equals",
+              "value2": "failed"
+            }
+          ]
+        }
+      },
+      "id": "filter-failed",
+      "name": "Filter Failed Jobs",
+      "type": "n8n-nodes-base.if",
+      "position": [690, 800],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=:x: *Pipeline Failed*\nJob: `{{ $json.job_id }}`\nTopic: {{ $json.topic }}\nStage: {{ $json.stage }}",
+        "otherOptions": {}
+      },
+      "id": "slack-failed",
+      "name": "Slack: Alert Failed",
+      "type": "n8n-nodes-base.slack",
+      "position": [910, 750],
+      "typeVersion": 2
+    }
+  ],
+  "connections": {
+    "Webhook: New Topic": {
+      "main": [
+        [{ "node": "Start Pipeline", "type": "main", "index": 0 }]
+      ]
+    },
+    "Start Pipeline": {
+      "main": [
+        [{ "node": "Respond to Webhook", "type": "main", "index": 0 }]
+      ]
+    },
+    "Webhook: Approval Gate Notification": {
+      "main": [
+        [{ "node": "Slack: Notify Gate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack: Notify Gate": {
+      "main": [
+        [{ "node": "Respond to Gate Hook", "type": "main", "index": 0 }]
+      ]
+    },
+    "Hourly Job Check": {
+      "main": [
+        [{ "node": "GET /jobs", "type": "main", "index": 0 }]
+      ]
+    },
+    "GET /jobs": {
+      "main": [
+        [{ "node": "Filter Failed Jobs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter Failed Jobs": {
+      "main": [
+        [{ "node": "Slack: Alert Failed", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "content-bot" }]
+}
